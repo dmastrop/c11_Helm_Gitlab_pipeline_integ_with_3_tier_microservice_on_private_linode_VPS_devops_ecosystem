@@ -20,16 +20,18 @@ stages:
 
 
 build:
-  image: docker:latest
+  #image: docker:latest
+  image: docker:24.0.5
   # this is a docker image that has the docker client baked into it. Used in CI/CD to build docker images
   # from a container
   stage: build
   # name of the stage for reference in the pipeline
   services:
-    - docker:dind
+    - docker:24.0.5-dind
+    #- docker:dind
     # docker in docker service
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    #DOCKER_HOST: tcp://docker:2375/
     DOCKER_TLS_CERTDIR: "/certs"
   before_script:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
