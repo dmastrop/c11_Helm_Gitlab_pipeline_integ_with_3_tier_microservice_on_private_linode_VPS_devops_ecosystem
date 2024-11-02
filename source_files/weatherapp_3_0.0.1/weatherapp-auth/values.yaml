@@ -7,7 +7,7 @@ replicaCount: 2
 
 image:
   #repository: afakharany/weatherapp-auth
-  repository: dave123456789/weatherapp-auth2
+  repository: dave123456789/weatherapp-auth3
   #repository: dave123456789/weatherapp-auth
   # the tag will be appVersion in the Chart.yaml which is 0.0.1 for now.
   # the tag is alwsy from the Chart.yaml file and should not be indiected here.
