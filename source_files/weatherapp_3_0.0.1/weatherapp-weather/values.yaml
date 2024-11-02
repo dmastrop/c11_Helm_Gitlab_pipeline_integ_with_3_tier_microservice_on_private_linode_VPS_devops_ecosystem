@@ -7,7 +7,7 @@ replicaCount: 2
 
 image:
   #repository: afakharany/weatherapp-weather
-  repository: dave123456789/weatherapp-weather2
+  repository: dave123456789/weatherapp-weather3
   #repository: dave123456789/weatherapp-weather
   # the tag 0.0.3 is from the Chart.yaml
   pullPolicy: IfNotPresent
