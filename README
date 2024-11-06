@@ -1,5 +1,492 @@
-# 
+# c11_Helm_Gitlab_pipeline_integration_with_3_tier_microservice_source_code_on_private_linode_VPS_devops_ecosystem to an AWS EKS cluster
 
-## test1
+## High level summary:
+
+This uses a gitlab pipeline to deploy the 3 tier microservice app using helm to an AWS EKS k8s cluster. The gitlab pipeline uses helm charts to deploy the 3 tier microservice app to an AWS EKS cluster.  The README has the administrative tasks required. 
+
+IMPORTANT NOTE: this is using the private linode VPS devops ecosystem and gitlab running in that environment in a docker container.  It is not using a  public gitlab
+The gitlab runner is running as a systemctl service on the VPS and not as a docker container on the VPS
+The gitlab app is running as a docker container on the VPS
+In order to facilitate registration of gitlab runner executors with the gitlab iptables and traefik routers have to be configured to allow communcaiton from the VPS ip (gitalb runner) to the gitlab docker container ip address space. This has all be configured as part of the VPS project infrastructure (separate github project repository) using ansible from the EC2 controller.
+
+
+## github and gitlab repository design:
+
+The local VSCode on mac is used just for basic editing of README and push to github repo.
+
+The github repo is just for public publishing and documentation purposes of this project
+
+The EC2 ansible controller has the active current code and has a remote git repo configured to the gitlab private repository on the linode VPS devops ecosystem. This is the remote origin that activates the gitlab pipeline.
+
+The EC2 controller also has a remote origin2 to the github repo above for synching up the latest code changes to github for public publication purposes
+
+NOTE that a merge on gitlab requires a pull from gitlab repo to EC2 to synch main up and then a push from EC2 main to github main and pull to VSCode on mac. The same can be done to synch the git tags created on the EC2 controller. They can be pushed to github and then pulled to the local VSCode on mac.
+
+There is no need to synch up the feature branches on EC2.  They are removed on gitlab repo once the pipeline completes and there is no need for them on the github or local VS Code on mac.
+
+
+## Implemenation details for the gitlab2_eks user:
+
+### Step1: start up the AWS EKS cluster:
+
+2 options: either do it manually from aws configure user admin from the terminal or use the ansible playbook role eksctl that uses the script below.
+
+NOTE: the setting of the KUBECONFIG on the EC2 terminal or by the shell script below so as to minimize conflicts with other k8s active cluster configuration on the controller.
+
+
+main.yml
+
+- name: Run a script with arguments (using 'cmd' parameter)
+  ansible.builtin.script:
+    cmd: ./tasks/eksctl.sh
+
+ubuntu@ip-172-31-21-52:~/course11_devops_startup/ansible/eksctl/tasks$ cat eksctl.sh 
+#!/usr/bin/env bash
+export KUBECONFIG=~/.kube/eksctl_ansible/config
+eksctl create cluster -f /home/ubuntu/course11_devops_startup/ansible/eksctl/tasks/cluster_ansible.yaml
+
+ubuntu@ip-172-31-21-52:~/course11_devops_startup/ansible/eksctl/tasks$ cat cluster_ansible.yaml 
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  #name: cluster-dave
+  name: cluster-ansible
+  #region: us-west-1
+  region: us-east-1
+  #version: "1.26" 
+  version: "1.29" 
+
+nodeGroups:
+  - name: ng-2
+    #instanceType: t3.large
+    instanceType: t3.small
+    desiredCapacity: 3
+
+
+Make sure to use the non-extended release version to minimize AWS costs.
+
+### Step2: Create the gitlab2_eks IAM user
+
+
+aws iam create-access-key --user-name gitlab2_eks
+
+
+
+### Step3: once cluster is up configure the ConfigMap for the gitlab2_eks AWS user
+
+The gitlab2_eks AWS user will be provisioned for use by gitlab to execute the gitlab deployment script on AWS EKS cluster via the AWS environmental variables in .gitlab-ci.yml file and configured in the gitlab project.   This user has reduced access policy rights  to the cluster that will be provisioned with the ConfigMap onto the EKS cluster with the procedure below.  For the administrative details below, the administrator aws user is used, and not the gitlab2_eks user. The gitlab2_eks user is only for gitlab's use. It does not have administrative permissions on the EKS cluster.  The steps below must be done by an administrator AWS user from the terminal of the EC2 controller onto the running AWS EKS cluster.
+
+To edit the configmap on the cluster: kubectl edit cm/aws-auth -n kube-system
+
+If the configmap aws-auth is not present (like with EKS default clusters) do the following to download the template yaml file:
+
+curl -o aws-auth-cm.yaml https://s3.us-west-2.amazonaws.com/amazon-eks/cloudformation/2020-10-29/aws-auth-cm.yaml
+
+Edit the file similar to the yaml file below:
+
+buntu@ip-172-31-21-52:~/course11_devops_startup_gitlab_repo/eksctl_course10_port_gitlab2_eks/course3_eksctl$ cat aws-auth-cm.yaml 
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-auth
+  namespace: kube-system
+data:
+  mapRoles: |
+    - rolearn: arn:aws:iam::xxxxxxxxxxx:role/eksctl-cluster2-nodegroup-ng-1-NodeInstanceRole-r6zG26S8XTAO
+      username: system:node:{{EC2PrivateDNSName}}
+      groups:
+        - system:bootstrappers
+        - system:nodes
+  mapUsers: |
+    - userarn: arn:aws:iam::xxxxxxxxxxxx:user/gitlab2_eks <<<<<<< ADD THIS. 
+      username: gitlab2_eks
+      groups:
+        - cicd   
+    - userarn: arn:aws:iam::xxxxxxxxxxxx:root
+      groups:
+        - system:masters
+
+
+The xxxxxxxxxx is from aws: sts get-caller-identity 
+The service Account number
+
+The arn of the gitlab2_eks user is from when the user was created earlier above in step2
+
+The NodeInstanceRole arn above is used if you need to display all the node and compute information of the EKS cluster when using the AWS Web console. (this is optional)
+To get this arn go into the Cloudformatino stack and to the nodegroup link. Once in the nodegroup go to the Resources tab and scroll down until you see the NodeInstanceRole
+Click on the NodeInstanceRole and the arn will be there for copy.
+
+The cluster <instance-role-id> is from the AWS console. It is under the Cloudformation stack ----> ndoegroup link ---> Resources tab ----> NodeInstanceRole link.  This hyperlinks to the IAM role for the cluster nodes
+The id is the trailing digits on the ARN
+
+
+
+### Step4: Apply the ConfigMap file above to the cluster
+
+kubectl apply -f aws-auth-cm.yaml
+
+ubuntu@ip-172-31-21-52:~/course11_devops_startup_gitlab_repo/eksctl_course10_port_gitlab2_eks/course3_eksctl$ kubectl apply -f aws-auth-cm.yaml 
+configmap/aws-auth created
+
+
+Once the configmap is applied to the cluster the compute nodes should now be visible in the AWS Console.
+
+
+### Step5: Edit the configmap on the cluster and apply the cicd role binding to the gitlab2_eks user
+
+
+create a staging kubernetes namespace: kubectl create ns staging.
+kubectl get ns
+NAME              STATUS   AGE
+default           Active   4h9m
+kube-node-lease   Active   4h9m
+kube-public       Active   4h9m
+kube-system       Active   4h9m
+$ kubectl create ns staging
+namespace/staging created
+$ kubectl get ns
+NAME              STATUS   AGE
+default           Active   4h9m
+kube-node-lease   Active   4h9m
+kube-public       Active   4h9m
+kube-system       Active   4h9m
+staging           Active   3s
+
+
+
+There are two namespaces for use: default (for production deployment) and staging (for staging deployment)
+
+For staging create the cicd role and bind it to the gitlab2_eks user:
+kubectl create role cicd --verb="*" --resource="*" -n staging
+kubectl edit role cicd -n staging
+kubectl create rolebinding cicd --role cicd --user=gitlab2_eks -n staging
+
+
+For default create the cicd role and bind it to the gitlab2_eks user:
+kubectl create role cicd --verb="*" --resource="*" 
+kubectl edit role cicd
+kubectl create rolebinding cicd --role cicd --user=gitlab2_eks
+
+
+The editing of the role involves one change below:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  creationTimestamp: "2024-11-05T23:57:36Z"
+  name: cicd
+  namespace: staging
+  resourceVersion: "42623"
+  uid: da7a3aba-6ac6-436a-8d5a-82e35700714d
+rules:
+- apiGroups:
+  - "*" <<<<<<<<<<<<<<<<<<<<<<<<<
+  resources:
+  - '*'
+  verbs:
+  - '*'
+
+### Step6: test this out with a terminal logged into the gitlab2_eks user
+
+aws configure list: point it to the profile of the gitlab2_eks user with
+export AWS_PROFILE=gitlab2_eks
+
+Run the following commands to verify that the gitlab2_eks user is configured correctly:
+
+ubuntu@ip-172-31-21-52:~/course11_devops_startup_gitlab_repo/weatherapp_course11_gitlab_linode$ kubectl get pod
+No resources found in default namespace.
+ubuntu@ip-172-31-21-52:~/course11_devops_startup_gitlab_repo/weatherapp_course11_gitlab_linode$ kubectl get pod -n staging
+No resources found in staging namespace.
+ubuntu@ip-172-31-21-52:~/course11_devops_startup_gitlab_repo/weatherapp_course11_gitlab_linode$ kubectl get node
+Error from server (Forbidden): nodes is forbidden: User "gitlab2_eks" cannot list resource "nodes" in API group "" at the cluster scope
+ubuntu@ip-172-31-21-52:~/course11_devops_startup_gitlab_repo/weatherapp_course11_gitlab_linode$ kubectl get pod -n kube-system
+Error from server (Forbidden): pods is forbidden: User "gitlab2_eks" cannot list resource "pods" in API group "" in the namespace "kube-system"
+
+
+## Add the ENV vars to the gitlab project
+
+Assuming that the gitlab project is created add ENV variables to the project for the following variables.
+
+The AWS ENV variables (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) are those of the gitlab2_eks user
+The K8SCONFIG is the .kube config file for the currently running cluster. This has to be updated each time a new cluster is brought up. See below
+The APIKEY is the key for the backend weather app api (used by the python source code of the weather microservice)
+CI_REGISTRY_USER and CI_REGISTRY_PASSWORD are the docker hub user account and password
+DB_PASSWORD is the backend mysql/mariadb root password to be used when configuring the backend db that is used by the auth microservice (golang)
+
+The UI is written in javascript
+
+### Updating the K8SCONFIG ENV varaible on the gitlab project
+
+Use the following command to convert the file to base64 and paste it into the K8CONFIG ENV variable in the project ENV vars.
+
+cat ~/.kube/eksctl/config | base64 | tr -d '\n' && echo
+OR 
+if created cluster using ansible script (role): cat ~/.kube/eksctl_ansible/config | base64 | tr -d '\n' && echo
+
+
+## The source code
+
+### The auth microservice source code:
+This is the auth directory
+There are 2 docker auth containers and the backend mysql db container.
+The auth container listens on 8080 with a ClusterIP type service
+This is written in golang. This provides the authentication request to the backend mysql db container. The credentials are supplied from the UI micrservice below when the user attempts to log in. 
+
+ubuntu@ip-172-31-21-52:~/course11_devops_startup_gitlab_repo/weatherapp_course11_gitlab_linode/source_files/weatherapp_3_0.0.1/auth/src/authdb$ ls -la
+total 16
+drwxrwxr-x 2 ubuntu ubuntu 4096 Oct 31 19:28 .
+drwxrwxr-x 4 ubuntu ubuntu 4096 Oct 31 19:28 ..
+-rw-rw-r-- 1 ubuntu ubuntu 1855 Oct 31 19:28 authdb.go
+-rw-rw-r-- 1 ubuntu ubuntu   48 Oct 31 19:28 go.mod
+ubuntu@ip-172-31-21-52:~/course11_devops_startup_gitlab_repo/weatherapp_course11_gitlab_linode/source_files/weatherapp_3_0.0.1/auth/src/authdb$ cd ..
+ubuntu@ip-172-31-21-52:~/course11_devops_startup_gitlab_repo/weatherapp_course11_gitlab_linode/source_files/weatherapp_3_0.0.1/auth/src$ cd main
+ubuntu@ip-172-31-21-52:~/course11_devops_startup_gitlab_repo/weatherapp_course11_gitlab_linode/source_files/weatherapp_3_0.0.1/auth/src/main$ ls -la
+total 24
+drwxrwxr-x 2 ubuntu ubuntu 4096 Oct 31 19:28 .
+drwxrwxr-x 4 ubuntu ubuntu 4096 Oct 31 19:28 ..
+-rw-rw-r-- 1 ubuntu ubuntu 1138 Oct 31 19:28 go.mod
+-rw-rw-r-- 1 ubuntu ubuntu 7039 Oct 31 19:28 go.sum
+-rw-rw-r-- 1 ubuntu ubuntu 3248 Oct 31 19:28 main.go
+
+### The UI microservice source code:
+This is the UI directory
+This is written in javascript and provides the web user interface in the browser. The helm chart will create a Loadbalancer type service on port 80 for the incoming requests (Values.yml file in the weather-ui UI helm chart; see below). The UI containers listen on port 3000
+
+
+
+### The weather microservice source code:
+This is the weather directory
+This is written in python.  The containers listen on port 5000 and is a ClusterIP type service.
+
+
+
+
+
+
+## helm charts:
+
+All three helm charts weatherapp-auth, weatherapp-ui and weatherapp-weather create 2 pods for each microservice on the kubernetes cluster. The pods are running the respective containers. The mysql db for the auth microservice uses a dependency chart within the auth helm chart and has a single pod.
+
+
+From the weather-auth Chart.yml file:
+dependencies:
+  - name: mysql
+  #the name mysql will be referenced in the deployment.yaml file when we define the env vars.
+    #version: 8.8.14
+    version: 11.1.3
+    #latest at the time of recording but may need to update this. Latest is now 11.1.3
+    #re-run the "helm dependency build" and remove the Charts.lock file and move charts folder to backup. A new
+    #charts folder will be created.
+    repository: https://charts.bitnami.com/bitnami
+
+
+The helm charts are created in the weatherapp_3_0.0.1 directory with the command:
+
+helm create weatherapp-auth weatherapp-ui and weatherapp-weather
+
+    The Chart.yml
+    values.yml and the
+    templates/deployment.yml have to be updated with the correct values
+
+In the weatherapp-auth directory must create a dependency chart for the mysql pod/container:
+helm dependency build
+This creates the subdirectory "charts" with the tarball for the mysql install.
+
+
+## The .gitlab-ci.yml file: 
+
+The objective is to use the helm charts above to deploy the microservices pods to the EKS cluster.
+
+The .gitlab-ci.yml file is in the root directory and has 5 stages below:
+  - build
+  - push
+  - deliver
+  - promote
+  - deploy
+
+
+Since the .gitlab-ci.yml file is in the root of the gitlab repo, all of the file directory paths in this file must be from the root.
+
+### IMPORTANT NOTE: the gitlab executor type
+
+The gitlab executor for this project must be configured as "docker".   Once the project is configured with the "docker" executor in the Gitlab Web console, the executor must be registered with the gitlab runner (the runner is running as a sysctl service on the VPS linode instance and not a docker container on the VPS)
+
+NOTE: a "docker+machine" executor is not required and is being deprecated.
+
+The token generated by the above must be used in this fashion for the "docker" executor to be configured correctly: (note privileged mode must be used)
+
+sudo gitlab-runner register -n --url https://gitlab.linode.cloudnetworktesting.com   --token ******************* --name vps6.linode.cloudnetworktesitng.com --executor docker --docker-image "docker:24.0.5" --docker-privileged --docker-volumes "/certs/client"
+
+This will create an entry in the config.toml file that looks like this:
+[[runners]]
+  name = "vps6.linode.cloudnetworktesitng.com"
+  url = "https://gitlab.linode.cloudnetworktesting.com"
+  id = 6
+  token = "glrt-t3_-KJDPcLdHXpxhLbP-q3s"
+  token_obtained_at = 2024-11-01T22:25:05Z
+  token_expires_at = 0001-01-01T00:00:00Z
+  executor = "docker"
+  [runners.custom_build_dir]
+  [runners.cache]
+    MaxUploadedArchiveSize = 0
+    [runners.cache.s3]
+    [runners.cache.gcs]
+    [runners.cache.azure]
+  [runners.docker]
+    tls_verify = false
+    image = "docker:24.0.5"
+    privileged = true <<<<<<<<<<<<<<<<<<<<<<
+    disable_entrypoint_overwrite = false
+    oom_kill_disable = false
+    disable_cache = false
+    volumes = ["/certs/client", "/cache"]
+    shm_size = 0
+    network_mtu = 0
+
+The volume is important as well for the TLS cert directory.  24.0.5 is a stable version for the default.
+
+The .gitlab-ci.ymal BUILD stage should use the configuration below to ensure that the executor is run properly
+
+
+build:
+  #image: docker:latest
+  image: docker:24.0.5
+  stage: build
+
+  services:
+    - docker:24.0.5-dind
+
+  variables:
+    #DOCKER_HOST: tcp://172.21.0.2:2375/
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
+
+  script:
+    - cd source_files/weatherapp_3_0.0.1/auth
+
+    - docker build -t $CI_REGISTRY_USER/weatherapp-auth3 . --no-cache
+
+    - cd ../UI
+    - docker build -t $CI_REGISTRY_USER/weatherapp-ui3 .
+
+    - cd ../weather
+    - docker build -t $CI_REGISTRY_USER/weatherapp-weather3 .
+  rules: 
+    - if: '$CI_COMMIT_TAG == null'
+
+FURTHER NOTES ON THIS:  Docker executor requirement on the project runner level. This is required, otherwise the gitlab script will not run and deploy properly.
+The main reason for using docker executor is to use docker containers to abstract all of the dependency requirements in using helm to deploy to an AWS EKS cluster.  It is best, for example, to spin up an alpine helm docker image and install aws cli on that then to try to run all of this natively on the runner itself. Note the runner is running on the VPS linode instance itself and that hosts all of the other ancillary applications of the devops ecosystem (like email, collaboration, VPS node monitoring, nextcloud and gitlab itself).  So if a shell executor for the gitlab runner,  for example, is used to run the gitlab pipeline the docker containers will spin up on the VPS and could tap VPS resources. The docker executor is using dind docker in docker service so that the docker containers for the app deployment itself (pipeline) are isolated from the underlying runner that is running on the VPS.
+
+
+
+
+
+### The BUILD stage:
+The BUILD stage builds the docker images from the source code and the Dockerfile in the source code 
+This is used primarily for the feature builds.   Check in a feature change in the EC2 source on a feature branch and push the code to the gitlab repo (remote)
+The BUILD stage is run for all branches without a git tag:
+  rules: 
+    - if: '$CI_COMMIT_TAG == null'
+
+Thus any push to main or feature branch will run the BUILD stage.   In reality, this stage would also include checkstyle and something like sonarqube for code integrity checks.
+If a  build has a git tag (CI_COMMIT_TAG is a git tag not a generic CI_COLMMIT_SHA commit hash), then there is no need to run the  BUILD stage because the build has been manually PROMOTEd (see PROMOTE stage below) as a candidate for DEPLOYment to the production namespace (default) on the k8s EKS cluster.
+
+
+### The PUSH stage:
+
+If the image has a git tag then this does not need to run again. Skip this and jump to the PROMOTE stage (see below)
+If the image does not have a git tag, it has not been promoted as a possible candidate to be deployed to the production default namespace cluster
+
+If the code push is a feature branch this is not run. This is only run for main branch pushes. There is no need to PUSH to docker hub for a feature branch.
+
+After the feature branch change is pushed the BUILD will run but then a MR (Merge request) must be created on gitlab console. Once the MR is created there is a test merge of the feature into the main branch with another run of the BUILD stage.
+
+Once this is complete a MERGE can be done from gitlab console and this will actually merge the feature----> main. At this point this image will trigger a PUSH stage (this stage) and push the image to docker hub so that it can be DELIVERed to the staging namespace on the EKS cluster. (see DELIVER stage below)
+
+An image that is delivered to the staging namespace can be futher tested by the QA organization.
+
+Depending on the results from QA testing (performance, integration, stress, soak, feature testing, system testing, etc) it can be PROMOTED with a git tag (see further below)
+
+### The DELIVER stage:
+
+This stage utilizes the helm charts described above. As such the docker in docker service that the stages in this gitlab pipeline utilize with the docker executor gitlab runner helps faclitate this. We can run an alpine/helm:latest docker image to run the helm commands necessary to deploy the microservices to the AWS EKS cluster. The apk package installer can be used to install aws-cli as well which is required for the helm install to the cluster. Note that the K8SCONFIG ENV variable in gitlab project for this is used and piped into the /tmp/.kube/config directory on the alpine docker container so that the container has full acccess to the current AWS EKS cluster.  NOTE that the AWS credentials have also been configured as ENV variables for this project on gitlab so that the gitlab2_eks user that was provisioned early on is used to deploy the microservices to the cloud. The gitlab2_eks user only has permissions to the staging and default namespaces and not kube-system for example, so that gitlab cannot be hijacked to alter the administration of the the cluster itself.
+
+This stage, like the PUSH stage, is only run for main build pushes. We never want a feature build that has not been propertly test merged and merged with main to be deployed to the staging server.  Using a merged feature to main build helps QA avoid wasting time testing unintegrated builds with extensive testing noted above.  The feature level unit testing should be done by developers themselves as integrated unit tests that have been approved by the QA team. 
+
+(A FACT stage can be created for feature builds to be deployed to the cluster if there is a requirement for QA to establish layers of FACT testing if the features committed in stages.  This is required if the unit testing by developers is sparse.  The MR can provide some sanity testing on this and QA can get involved in further validating the feature build MR into main prior to its integration into the main branch. If this is required, a separate DELIVER feature stage can be used to deploy the feature build that has been test merged into main (MR) to another namespace "feature" on the k8s cluster so that QA can do some integration and system based testing on the build prior to the approval to merge feature into main. This testing should be done because software integrity testing alone is not sufficient for testing any merge into main. If development is ok with reverting the commits and just using the staging environment for all of this that is also ok but that will require some more overhead in the process).
+
+
+At this point a kubectl get pod -n staging should show the pods and the myql pod on the cluster. NOTE there is an issue with EKS and the auth microservice causing it to crash. I don't see this issue with a kops based cluster.
+
+kubectl get svc -n staging will show the loadbalancer url and the site should come up in a browser.
+
+
+
+### PROMOTE stage:
+
+Code promotion will be done via git tagging.  This will tag the commits that are candidates for promotion to production deployment (default namespace on the EKS cluster)
+
+This stage requires that git be installed. The container will need to use git rev-list to get the commit hash in the git log that has this tag. This is referred to as the TAGGED_HASH in this part of the script.  For example: The CI_COMMIT_TAG is the 1.0.0 assigned tag to the commit.  TAGGED_HASH will be the git rev-list -n 1 $CI_COMMIT_TAG and will identify the docker image that has already been pushed to docker hub from a previous stage that is now marked for promotioin to deploy to the production (default) namespace on the EKS clsuter.
+
+This image is pulled and then docker tagged with the CI_COMMIT_TAG and repushed back out to docker hub resulting in the tagged docker image being on docker hub so that it can be easily identified as a candiate and easily helm deployed to the cluster by the DEPLOY stage (see below)
+
+NOTE that this PROMOTE stage is only run for builds with a CI_COMMIT_TAG, for example 1.0.0 as indicated in the example above....
+
+
+Once the merge is complete into main from the DELIVER stage, pull the code from gitlab repo to the EC2 controller repo and do a git log to get the feature into main merge COMMIT hash.
+
+For example:
+
+$ git log
+commit d7ac44fed7acf0a947b8f51d21efc9675172e7e2 (HEAD -> main, origin/main)  <<<< COMMIT HASH
+Merge: 0ce6e58 210dcc6
+Author: dmastrop <davemastropolo@linode.cloudnetworktesting.com>
+Date:   Wed Nov 6 02:47:10 2024 +0000
+
+    Merge branch 'feature-6' into 'main'
+    
+    feature-6
+    
+    See merge request dmastrop/course11_port_of_3tier_weatherapp_to_gitlab_linode!5
+
+commit 210dcc613d575188d89ad43f77881e8a83890254 (origin/feature-6, feature-6)
+Author: Ubuntu <ubuntu@ip-172-31-21-52.ec2.internal>
+Date:   Wed Nov 6 02:42:27 2024 +0000
+
+    feature-6
+
+
+Tag the COMMIT HASH above with the following command:
+
+git tag -a 1.0.21 d7ac44fed7acf0a947b8f51d21efc9675172e7e2 -m “Version 1.0.21” 
+
+
+Then push the tag to gitlab and this will start run the PROMOTE stage which will push the 1.0.21 tagged image to docker hub ready for deployment to the production namespace on the K8s EKS cluster.
+
+
+
+
+### DEPLOY stage:
+
+This stage is based upon many approvals in real life scenarios.  This is a deployment to product (k8s namespace default). This will be a manual deployment that is not auto-triggered based upon a branch push (unlike the DELIVER to staging stage above)
+Similar to the DELIVER stage aws-cli must be installed and an alpine/helm:lastest docker build will be used. Similarlly the K8SCONFIG ENV variable is used as well so that the docker container has access to the cluster via the helm command.
+This stage, like the PROMOTE stage is only allowed to run if there is a CI_COMMIT_TAG present on the build.
+
+At this point kubectl get pods (default ns) should show the pods and 
+kubectl get svn (default ns) should have the AWS url to the production deployment and it should work in the browser.
+
+
+
+
+
+
+
+
+
+
+
 
 
