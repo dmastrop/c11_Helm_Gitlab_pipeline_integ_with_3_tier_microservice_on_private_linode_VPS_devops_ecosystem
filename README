@@ -476,7 +476,7 @@ Similar to the DELIVER stage aws-cli must be installed and an alpine/helm:lastes
 This stage, like the PROMOTE stage is only allowed to run if there is a CI_COMMIT_TAG present on the build.
 
 At this point kubectl get pods (default ns) should show the pods and 
-kubectl get svn (default ns) should have the AWS url to the production deployment and it should work in the browser.
+kubectl get svc (default ns) should have the AWS url to the production deployment and it should work in the browser.
 
 
 
