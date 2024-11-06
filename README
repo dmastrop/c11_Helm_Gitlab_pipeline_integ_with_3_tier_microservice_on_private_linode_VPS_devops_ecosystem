@@ -324,7 +324,7 @@ This will create an entry in the config.toml file that looks like this:
   name = "vps6.linode.cloudnetworktesitng.com"
   url = "https://gitlab.linode.cloudnetworktesting.com"
   id = 6
-  token = "glrt-t3_-KJDPcLdHXpxhLbP-q3s"
+  token = "**************************"
   token_obtained_at = 2024-11-01T22:25:05Z
   token_expires_at = 0001-01-01T00:00:00Z
   executor = "docker"
